@@ -6,8 +6,10 @@
 """
 from random import randint
 
+
 def contains_valid_state(status):
     return ('M' in status) or ('E' in status) or ('S' in status)
+
 
 class Mesi:
     """
@@ -26,7 +28,7 @@ class Mesi:
 
         self.processors = {}
         for x in range(4):
-            self.processors[x] = Processor(self.bus, self.memory)
+            self.processors[x] = Processor(x, self.bus, self.memory)
 
     def instruction(self, processor, r_w, address):
         """
@@ -55,12 +57,14 @@ class Processor:
     Processor for a MESI simulator. Handles its operations and cache.
     """
 
-    def __init__(self, bus, memory):
+    def __init__(self, number, bus, memory):
         """
         Initializes a simulated processor and its cache.
         """
-        self.cache = [{'state': 'I', 'value': 0} for x in range(4)]
+        self.cache = {'state': 'I', 'values': [0 for x in range(4)]}
+        self.number = number
         self.bus = bus
+        self.bus.processors.append(self)
         self.memory = memory
 
     def pr_rd(self, address):
@@ -69,40 +73,43 @@ class Processor:
         :param address: The address in memory.
         :return: The value in cache
         """
-        cache_item = self.cache[address]
-        if cache_item['state'] is 'I':
-            bus_status = self.snooper(address)
-            self.bus.bus_rd(address)
-            if contains_valid_state(bus_status): # If in other caches
-                cache_item['state'] = 'S'
-                # Get value from other cache...
-            else: # If no other caches have valid copy
-                cache_item['state'] = 'E'
-                self.cache[address]['value'] = self.memory.data[address]
+        if self.cache['state'] is 'I':  # If we're in the invalid state
+            # bus_status = self.snooper()
+            self.cache['state'], self.cache['values'] = self.bus.bus_rd(self.number)
+            # if contains_valid_state(bus_status[:address] + bus_status[address+1:]):  # If in other caches
+            #     self.cache['state'] = 'S'
+            #     # Get value from other cache...
+            # else:  # If no other caches have valid copy
+            #     self.cache['state'] = 'E'
+            #     self.cache['values'] = self.memory.data
 
+        else:
+            # We already have a valid copy of the information.
+            pass
 
-        return cache_item
+        return self.cache['values'][address]
 
     def pr_wr(self, address):
         """
-        Writes an address from the cache to the shared memory.
+        Writes to a cache block.
 
         :param address: The address in memory
         :return: The value in cache.
         """
 
-        self.memory[address] = self.cache[address]
-        return self.memory[address]
+        self.cache['state'] = 'M'
+        self.cache['values'][address] = randint(0, 1000)
 
-    def snooper(self, address):
+        return self.cache['values'][address]
+
+    def snooper(self):
         """
         Snoops on the bus for changes in the cache.
-        Updates this processor's cache if necessary.
-        :address: the address we're checking.
+
         :return: the states of the item in other caches.
         """
 
-        return self.bus.status[address]
+        return self.bus.status
 
 
 class Bus:
@@ -112,29 +119,49 @@ class Bus:
 
     def __init__(self, memory):
         self.memory = memory
-        #creates a dict containing each address and it's status.
-        self.status = {}
-        for address in range(4):
-            self.status[address] = ['I' for p in range(4)]
-        pass
 
-    def bus_rd(self, address):
+        # creates a list to hold references to the processors
+        self.processors = []
+
+        # creates a list containing each processor's cache status.
+        self.status = ['I' for p in range(4)]
+
+    def bus_rd(self, processor):
         """
+        Handles a bus_rd request from the given processor.
 
-        :return:
+        :param processor: processor requesting the block
+        :return: state, block from memory or another cache
         """
-        state = self.status[address]
+        status = self.status[processor]
+        if status is 'I':
+            if 'E' in self.status:
+                block = self.processors[self.status.index('E')].cache['values']
+                self.status[processor] = 'S'
+                for x in self.status:
+                    if x is 'E':
+                        self.status[self.status.index('E')] = 'S'
+            else:
+                self.status[processor] = 'E'
+                block = self.memory.data
 
-        if state is 'I':
-            pass
-        elif state is 'E':
-            self.status[address] = 'S'
-        elif state is 'S':
-            pass
-        elif state is 'M':
-            self.status[address] = 'S'
+        elif status is 'E':
+            # bus_rd only happens to E when another processor is requesting, therefore it is now 'S'
+            block = self.processors[self.status.index('E')].cache['values']
+            self.status[processor] = 'S'
+            if 'E' in self.status:
+                for x in self.status:
+                    if x is 'E':
+                        self.status[self.status.index('E')] = 'S'
 
-        return None
+        # No need to do anything on Shared
+
+        elif status is 'M':
+            # Transition to shared and put flush_opt on bus.
+            self.status[processor] = 'S'
+            self.flush_opt()
+
+        return self.status[processor], block
 
     def bus_rdx(self):
         """
@@ -155,7 +182,7 @@ class Bus:
 
 class Memory:
     """
-    Simulated shared memory for MESI simulator.
+    Simulated shared memory block for MESI simulator.
     """
 
     def __init__(self):
@@ -168,3 +195,7 @@ if __name__ == "__main__":
     print(mesi.memory.data)
     mesi.processors[0].pr_rd(0)
     print(mesi.processors[0].cache)
+    print(mesi.bus.status)
+    mesi.processors[2].pr_rd(0)
+    print(mesi.processors[1].cache)
+    print(mesi.bus.status)
