@@ -43,10 +43,10 @@ class Mesi:
         """
 
         if r_w is 0:
-            logging.info('P{}: PrRd {}'.format(processor, address))
+            logging.info('P{}: PrRd addr {}'.format(processor, address))
             instruction = self.processors[processor].pr_rd(address)
         else:
-            logging.info('P{}: PrWr {}'.format(processor, address))
+            logging.info('P{}: PrWr addr {}'.format(processor, address))
             instruction = self.processors[processor].pr_wr(address)
 
         logging.info('P{}: Cache: {}'.format(processor, instruction))
@@ -155,7 +155,7 @@ class Processor:
                     self.bus.transaction([self.number, 'flush_opt'])
 
             # BusRdX
-            elif last_transaction is 'bus_rd_x':
+            elif last_transaction[1] is 'bus_rd_x':
                 if self.cache['state'] is 'E':
                     # Transition to Invalid.
                     # Put FlushOpt on Bus, together with the data from now-invalidated block.
@@ -178,7 +178,7 @@ class Processor:
 
                     self.cache['state'] = 'I'
                     self.bus.block = self.cache['values']
-                    self.bus.transaction(self.number, 'flush_opt')
+                    self.bus.transaction([self.number, 'flush_opt'])
 
         return self.bus.status
 
@@ -311,11 +311,32 @@ class Memory:
 if __name__ == "__main__":
     mesi = Mesi()
 
-    for x in range(10):
-        print("----- TEST #{} -----".format(x))
-        mesi.random_test()
+    # for x in range(10):
+    #     print("----- TEST #{} -----".format(x))
+    #     mesi.random_test()
+    #     print("STATES: " + str(mesi.bus.status))
+    #     print("MEM:    " + str(mesi.memory.data))
+    #     input("Enter to continue...")
+    # print("BUS TRANSACTIONS:")
+    # for transaction in mesi.bus.transactions:
+    #     print(transaction)
+
+    tests = [
+        [0,0],
+        [0,1],
+        [2,0],
+        [2,1],
+        [0,0],
+        [2,0],
+        [1,0]
+    ]
+    for t  in tests:
+        print("----- TEST: {} -----".format(t))
+        mesi.instruction(t[0],t[1],0)
         print("STATES: " + str(mesi.bus.status))
         print("MEM:    " + str(mesi.memory.data))
+        print("LAST BUS_TRANS" + str(mesi.bus.transactions[-1]))
+        input("Enter to continue...")
     print("BUS TRANSACTIONS:")
     for transaction in mesi.bus.transactions:
         print(transaction)
