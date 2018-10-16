@@ -9,11 +9,6 @@
 import logging
 from random import randint
 
-
-def contains_valid_state(status):
-    return ('M' in status) or ('E' in status) or ('S' in status)
-
-
 class Mesi:
     """
     Main MESI simulator class. Can be seen as the chip that contains all of the Processors, Bus, and Memory.
@@ -23,7 +18,8 @@ class Mesi:
         """
         Initializes bus, memory, and processors.
         """
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+        # logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
 
         self.memory = Memory()
         self.bus = Bus(self.memory)
@@ -73,7 +69,7 @@ class Processor:
         """
 
         logging.debug("Initializing processor " + str(number))
-        self.cache = {'state': 'I', 'values': [0 for x in range(4)]}
+        self.cache = {'state': 'I', 'values': [0, 0, 0, 0]}
         self.number = number
         self.bus = bus
         self.bus.processors.append(self)
@@ -87,12 +83,18 @@ class Processor:
         """
 
         if self.cache['state'] is 'I':  # If we're in the invalid state
-            # Issue a bus_rd and store the values.
-            # self.cache['state'], self.cache['values'] = self.bus.bus_rd(self.number)
+            # Issue BusRd to the bus
+            # other Caches see BusRd and check if they have a non-invalid copy, inform sending cache
+            # State transition to (S)Shared, if other Caches have non-invalid copy.
+            # State transition to (E)Exclusive, if none (must ensure all others have reported).
+            # If other Caches have copy, one of them sends value, else fetch from Main Memory
             self.cache['state'], self.cache['values'] = self.bus.transaction([self.number, 'bus_rd'])
 
-        else:
+        else:  # M, S, and E
             # We already have a valid copy of the information.
+            # No bus transactions generated
+            # State remains the same.
+            # Read to the block is a Cache hit
             pass
 
         logging.info("Value: " + str(self.cache['values'][address]))
@@ -106,7 +108,16 @@ class Processor:
         :return: The cache.
         """
         if self.cache['state'] is 'I':
+            # Issue BusRdX signal on the bus
+            # State transition to (M)Modified in the requestor Cache.
+            # If other Caches have copy, they send value, otherwise fetch from Main Memory
+            # If other Caches have copy, they see BusRdX signal and Invalidate their copies.
+            # Write into Cache block modifies the value.
             self.cache['values'] = self.bus.transaction([self.number, 'bus_rd_x'])
+
+        elif self.cache['state'] is 'S':
+            self.bus.transaction([self.number, 'bus_upgr'])
+
         self.cache['state'] = 'M'
 
         self.cache['values'][address] = randint(0, 1000)
@@ -130,6 +141,7 @@ class Processor:
             # BusRd
             if last_transaction[1] is "bus_rd":
                 if self.cache['state'] is 'E':
+                    logging.debug('BusRd E->S')
                     # Transition to Shared (Since it implies a read taking place in other cache).
                     # Put FlushOpt on bus together with contents of block.
 
@@ -139,6 +151,7 @@ class Processor:
                     self.bus.transaction([self.number, 'flush_opt'])
 
                 elif self.cache['state'] is 'S':
+                    logging.debug('BusRd S->S')
                     # No State change (other cache performed read on this block, so still shared).
                     # May put FlushOpt on bus together with contents of block
                     # (design choice, which cache with Shared state does this).
@@ -149,6 +162,7 @@ class Processor:
                     # Transition to (S)Shared.
                     # Put FlushOpt on Bus with data. Received by sender of BusRd and Memory Controller,
                     # which writes to Main memory.
+                    logging.debug('BusRd M->S')
 
                     self.cache['state'] = 'S'
                     self.bus.block = self.cache['values']
@@ -156,29 +170,21 @@ class Processor:
 
             # BusRdX
             elif last_transaction[1] is 'bus_rd_x':
-                if self.cache['state'] is 'E':
+                if self.cache['state'] is not 'I':
+                    logging.debug("BusRdX has valid copy.")
+                    logging.debug('state was: {}'.format(self.cache['state']))
+                    # If we had a valid copy of the data (E,M,S)
                     # Transition to Invalid.
                     # Put FlushOpt on Bus, together with the data from now-invalidated block.
                     self.cache['state'] = 'I'
 
                     self.bus.block = self.cache['values']
                     self.bus.transaction([self.number, 'flush_opt'])
-                elif self.cache['state'] is 'S':
-                    # Transition to Invalid (cache that sent BusRdX becomes Modified)
-                    # May put FlushOpt on bus together with contents of block
-                    # (design choice, which cache with Shared state does this)
+            # BusUpgr
+            elif last_transaction[1] is "bus_upgr":
+                if self.cache['state'] is 'S':
+                    logging.debug('BusUpgr S->I')
                     self.cache['state'] = 'I'
-                    self.bus.block = self.cache['values']
-                    self.bus.transaction([self.number, 'flush_opt'])
-
-                elif self.cache['state'] is 'M':
-                    # Transition to (I)Invalid.
-                    # Put FlushOpt on Bus with data. Received by sender of BusRdx and Memory Controller,
-                    # which writes to Main memory.
-
-                    self.cache['state'] = 'I'
-                    self.bus.block = self.cache['values']
-                    self.bus.transaction([self.number, 'flush_opt'])
 
         return self.bus.status
 
@@ -197,13 +203,15 @@ class Bus:
         # holds all transactions on the bus in the form [processor_number, action]
         self.transactions = []
 
+        # A variable to temporarily store a block of cache for another processor.
         self.block = None
-
-        # creates a list containing each processor's cache status.
-        # self.status = ['I' for p in range(4)]
 
     @property
     def status(self):
+        """
+        Gets the current state of all of the processor's caches.
+        :return: list of states for all processors
+        """
         status = []
         for x in self.processors:
             status.append(x.cache['state'])
@@ -215,6 +223,8 @@ class Bus:
         :param action: transaction as [processor_number, action]
         :return: The result of the transaction.
         """
+        logging.debug(action)
+
         self.transactions.append(action)
         self.processor_snooping()
         return getattr(self, action[1])()
@@ -226,7 +236,6 @@ class Bus:
 
         :return: block from memory or another cache
         """
-        logging.debug("BusRd")
 
         if self.block:
             cache_block = self.block
@@ -243,8 +252,6 @@ class Bus:
         :return: the block from another cache or memory.
         """
 
-        logging.debug("BusRdX")
-
         if self.block:
             cache_block = self.block
             self.block = None
@@ -252,14 +259,13 @@ class Bus:
         else:
             return self.memory.data
 
-
     def bus_upgr(self):
         """
         Snooped request that indicates that there is a write request to a Cache block
         made by another processor but that processor already has that Cache block
         resident in its Cache.
 
-        :return:
+        :return: None
         """
 
         return None
@@ -290,7 +296,7 @@ class Bus:
         """
         Has all processors perform their snooping and respond appropriately.
 
-        :return:
+        :return: None
         """
 
         for x in self.processors:
@@ -308,35 +314,55 @@ class Memory:
         self.data = [randint(0, 1000) for x in range(4)]
 
 
-if __name__ == "__main__":
+def random_test(n):
+    """
+    Performs the specified number of random tests on the MESI simulator.
+    :param n: number of random instructions to perform.
+    :return: None
+    """
     mesi = Mesi()
 
-    # for x in range(10):
-    #     print("----- TEST #{} -----".format(x))
-    #     mesi.random_test()
-    #     print("STATES: " + str(mesi.bus.status))
-    #     print("MEM:    " + str(mesi.memory.data))
-    #     input("Enter to continue...")
-    # print("BUS TRANSACTIONS:")
+    for x in range(n):
+        logging.info("----- INSTRUCTION #{} -----".format(x+1))
+        mesi.random_test()
+        logging.info("STATES: " + str(mesi.bus.status))
+        logging.info("MEM:    " + str(mesi.memory.data))
+    # logging.info("BUS TRANSACTIONS:")
     # for transaction in mesi.bus.transactions:
-    #     print(transaction)
+    #     logging.info(transaction)
 
+
+def wikipedia_test():
+    """
+    Performs the operations outlined in "Illustration of MESI protocol operations" on the MESI protocol Wikipedia page.
+
+    :return: None
+    """
+    mesi = Mesi()
     tests = [
-        [0,0],
-        [0,1],
-        [2,0],
-        [2,1],
-        [0,0],
-        [2,0],
-        [1,0]
+        [0, 0],
+        [0, 1],
+        [2, 0],
+        [2, 1],
+        [0, 0],
+        [2, 0],
+        [1, 0]
     ]
-    for t  in tests:
-        print("----- TEST: {} -----".format(t))
-        mesi.instruction(t[0],t[1],0)
-        print("STATES: " + str(mesi.bus.status))
-        print("MEM:    " + str(mesi.memory.data))
-        print("LAST BUS_TRANS" + str(mesi.bus.transactions[-1]))
-        input("Enter to continue...")
-    print("BUS TRANSACTIONS:")
-    for transaction in mesi.bus.transactions:
-        print(transaction)
+
+    for n in range(len(tests)):
+        logging.info("----- INSTRUCTION #{} -----".format(n+1))
+        t = tests[n]
+        mesi.instruction(t[0], t[1], 0)
+        logging.info("STATES: " + str(mesi.bus.status))
+        logging.info("MEM:    " + str(mesi.memory.data))
+
+    # Uncomment to see bus transactions
+    # logging.info("BUS TRANSACTIONS:")
+    # for transaction in mesi.bus.transactions:
+    #     logging.info(transaction)
+
+
+if __name__ == "__main__":
+    random_test(10)
+
+    # wikipedia_test()
