@@ -18,8 +18,8 @@ class Mesi:
         """
         Initializes bus, memory, and processors.
         """
-        # logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+        # logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 
         self.memory = Memory()
         self.bus = Bus(self.memory)
@@ -124,7 +124,7 @@ class Processor:
 
         return self.cache
 
-    def snooper(self):
+    def snooper(self, last_transaction):
         """
         Snoops on the bus for changes in the cache.
 
@@ -132,7 +132,6 @@ class Processor:
         """
         logging.debug('P{} snooping'.format(self.number))
 
-        last_transaction = self.bus.transactions[-1]
         logging.debug('last_transaction: ' + str(last_transaction))
 
         if last_transaction[0] is not self.number:
@@ -294,13 +293,13 @@ class Bus:
 
     def processor_snooping(self):
         """
-        Has all processors perform their snooping and respond appropriately.
+        Has all processors perform their snooping and respond appropripyately.
 
         :return: None
         """
-
+        last_action = self.transactions[-1]
         for x in self.processors:
-            x.snooper()
+            x.snooper(last_action)
 
         return None
 
